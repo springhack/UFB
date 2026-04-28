@@ -259,14 +259,23 @@ static uint64_t auto_unload_empty_t0_ms[4]  = {0ull,0ull,0ull,0ull};
 // - hold pull/push for 1s = manual continuous feed/retract until released
 static constexpr uint64_t STANDALONE_AUTOLOAD_DEBOUNCE_MS    = 80ull;
 static constexpr uint64_t STANDALONE_AUTOLOAD_MAX_MS         = 6000ull;
+#if STANDALONE_HIGH_FORCE
+static constexpr float    STANDALONE_AUTOLOAD_PWM_PUSH       = 960.0f;
+#else
 static constexpr float    STANDALONE_AUTOLOAD_PWM_PUSH       = 850.0f;
+#endif
 static constexpr float    STANDALONE_MANUAL_PULL_START_PCT   = 30.0f;
 static constexpr float    STANDALONE_MANUAL_PULL_RELEASE_PCT = 40.0f;
 static constexpr float    STANDALONE_MANUAL_PUSH_START_PCT   = 70.0f;
 static constexpr float    STANDALONE_MANUAL_PUSH_RELEASE_PCT = 60.0f;
 static constexpr uint64_t STANDALONE_MANUAL_HOLD_MS          = 1000ull;
+#if STANDALONE_HIGH_FORCE
+static constexpr float    STANDALONE_MANUAL_PWM_FEED         = 950.0f;
+static constexpr float    STANDALONE_MANUAL_PWM_RETRACT      = 900.0f;
+#else
 static constexpr float    STANDALONE_MANUAL_PWM_FEED         = 850.0f;
 static constexpr float    STANDALONE_MANUAL_PWM_RETRACT      = 850.0f;
+#endif
 
 static uint8_t  standalone_prev_key[4]         = {0u,0u,0u,0u};
 static uint8_t  standalone_autoload_active[4]  = {0u,0u,0u,0u};
