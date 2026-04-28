@@ -259,7 +259,7 @@ static uint64_t auto_unload_empty_t0_ms[4]  = {0ull,0ull,0ull,0ull};
 // - hold pull/push for 1s = manual continuous feed/retract until released
 static constexpr uint64_t STANDALONE_AUTOLOAD_DEBOUNCE_MS    = 80ull;
 static constexpr uint64_t STANDALONE_AUTOLOAD_MAX_MS         = 6000ull;
-#if STANDALONE_HIGH_FORCE
+#if FILAMENT_BUFFER_BMCU_HIGH_FORCE
 static constexpr float    STANDALONE_AUTOLOAD_PWM_PUSH       = 960.0f;
 #else
 static constexpr float    STANDALONE_AUTOLOAD_PWM_PUSH       = 850.0f;
@@ -269,7 +269,7 @@ static constexpr float    STANDALONE_MANUAL_PULL_RELEASE_PCT = 40.0f;
 static constexpr float    STANDALONE_MANUAL_PUSH_START_PCT   = 70.0f;
 static constexpr float    STANDALONE_MANUAL_PUSH_RELEASE_PCT = 60.0f;
 static constexpr uint64_t STANDALONE_MANUAL_HOLD_MS          = 1000ull;
-#if STANDALONE_HIGH_FORCE
+#if FILAMENT_BUFFER_BMCU_HIGH_FORCE
 static constexpr float    STANDALONE_MANUAL_PWM_FEED         = 950.0f;
 static constexpr float    STANDALONE_MANUAL_PWM_RETRACT      = 900.0f;
 #else
@@ -292,22 +292,7 @@ static constexpr int MC_PULL_DEADBAND_PCT_LOW  = 30;
 static constexpr int MC_PULL_DEADBAND_PCT_HIGH = 70;
 
 // ================ LOAD CONTROL ======================
-#if BMCU_SOFT_LOAD
-    // Stage1
-    static constexpr int   MC_LOAD_S1_FAST_PCT       = 75;
-    static constexpr int   MC_LOAD_S1_HARD_STOP_PCT  = 90;  // bezpiecznik
-    static constexpr int   MC_LOAD_S1_HARD_HYS       = 2;   // wróć dopiero < (HARD_STOP - HYS)
-    // Stage2 (hold_load)
-    static constexpr float MC_LOAD_S2_HOLD_TARGET_PCT    = 75.0f;
-    static constexpr float MC_LOAD_S2_HOLD_BAND_LO_DELTA = 0.3f;   // push_hi = hold_target - delta
-    static constexpr float MC_LOAD_S2_PUSH_START_PCT     = 55.0f;  // start push PWM
-    static constexpr float MC_LOAD_S2_PWM_HI             = 480.0f;
-    static constexpr float MC_LOAD_S2_PWM_LO             = 1000.0f;
-    // ===== ON_USE CONTROL =====
-    static constexpr float MC_ON_USE_TARGET_PCT    = 52.0f;
-    static constexpr float MC_ON_USE_BAND_LO_DELTA = 0.2f;  // band_lo = target - delta
-    static constexpr float MC_ON_USE_BAND_HI_PCT   = 60.0f;
-#elif BMCU_P1S  // P1S
+#if FILAMENT_BUFFER_BMCU_HIGH_FORCE
     // Stage1
     static constexpr int   MC_LOAD_S1_FAST_PCT       = 88;
     static constexpr int   MC_LOAD_S1_HARD_STOP_PCT  = 97;  // bezpiecznik
@@ -322,7 +307,7 @@ static constexpr int MC_PULL_DEADBAND_PCT_HIGH = 70;
     static constexpr float MC_ON_USE_TARGET_PCT    = 54.0f;
     static constexpr float MC_ON_USE_BAND_LO_DELTA = 0.2f;  // band_lo = target - delta
     static constexpr float MC_ON_USE_BAND_HI_PCT   = 65.0f;
-#else        // A1
+#else
     // Stage1
     static constexpr int   MC_LOAD_S1_FAST_PCT       = 85;
     static constexpr int   MC_LOAD_S1_HARD_STOP_PCT  = 95;  // bezpiecznik

@@ -38,9 +38,9 @@ extern bool    filament_channel_inserted[4];
 #define BMCU_ONLINE_LED_FILAMENT_RGB 0
 #endif
 
-// platformio.ini: -DSTANDALONE_HIGH_FORCE=1
-#ifndef STANDALONE_HIGH_FORCE
-#define STANDALONE_HIGH_FORCE 0
+// platformio.ini: -DFILAMENT_BUFFER_BMCU_HIGH_FORCE=1
+#ifndef FILAMENT_BUFFER_BMCU_HIGH_FORCE
+#define FILAMENT_BUFFER_BMCU_HIGH_FORCE 0
 #endif
 
 #ifndef motion_control_ams_num
