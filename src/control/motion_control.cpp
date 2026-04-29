@@ -189,17 +189,17 @@ static inline __attribute__((always_inline)) void MC_STU_RGB_set_latch(uint8_t c
         MC_STU_RGB_set(ch, r, g, b);
 }
 
-#if BMCU_DM_TWO_MICROSWITCH
 static inline uint8_t dm_key_to_state(uint8_t ch, float v)
 {
     const float none_thr = MC_DM_KEY_NONE_THRESH[ch];
 
     if (v < none_thr) return 0u;   // none
-    if (v > 1.7f)     return 1u;   // both
-    if (v > 1.4f)     return 2u;   // external only
-    return 3u;
+    if (v > 1.7f)     return 1u;   // both / second switch reached
+    if (v > 1.4f)     return 2u;   // first switch only
+    return 3u;                     // rare intermediate / undefined
 }
 
+#if BMCU_DM_TWO_MICROSWITCH
 // ---- DM autoload (two microswitch) ----
 static constexpr uint64_t DM_AUTO_S1_DEBOUNCE_MS       = 100ull;   // 0.1s
 static constexpr uint64_t DM_AUTO_S1_TIMEOUT_MS        = 5000ull;  // 5s
@@ -543,11 +543,10 @@ static inline void MC_PULL_ONLINE_read(uint32_t now_ticks)
     }
     // --- End Buffer Gesture Load  ---
 #else
-    // online key: tylko jeśli kanał fizycznie wpięty
-    MC_ONLINE_key_stu[3] = (filament_channel_inserted[3] && (key3 > 1.7f)) ? 1u : 0u;
-    MC_ONLINE_key_stu[2] = (filament_channel_inserted[2] && (key2 > 1.7f)) ? 1u : 0u;
-    MC_ONLINE_key_stu[1] = (filament_channel_inserted[1] && (key1 > 1.7f)) ? 1u : 0u;
-    MC_ONLINE_key_stu[0] = (filament_channel_inserted[0] && (key0 > 1.7f)) ? 1u : 0u;
+    MC_ONLINE_key_stu[3] = filament_channel_inserted[3] ? dm_key_to_state(3u, key3) : 0u;
+    MC_ONLINE_key_stu[2] = filament_channel_inserted[2] ? dm_key_to_state(2u, key2) : 0u;
+    MC_ONLINE_key_stu[1] = filament_channel_inserted[1] ? dm_key_to_state(1u, key1) : 0u;
+    MC_ONLINE_key_stu[0] = filament_channel_inserted[0] ? dm_key_to_state(0u, key0) : 0u;
 #endif
 
 
@@ -2469,8 +2468,9 @@ static void standalone_update(uint64_t now_ms)
         const uint8_t ks = MC_ONLINE_key_stu[ch];
         const float pct = MC_PULL_pct_f[ch];
         const bool channel_empty = (ks == 0u);
+        const bool first_switch_seen = (ks == 2u);
 
-        if (!channel_empty)
+        if (!channel_empty || standalone_autoload_active[ch])
         {
             standalone_manual_candidate[ch] = 0;
             standalone_manual_active[ch] = 0;
@@ -2511,7 +2511,7 @@ static void standalone_update(uint64_t now_ms)
         {
             const uint64_t dt = now_ms - standalone_autoload_t0_ms[ch];
 
-            if ((standalone_manual_active[ch] != 0) ||
+        if ((standalone_manual_active[ch] != 0) ||
                 (dt < STANDALONE_AUTOLOAD_DEBOUNCE_MS))
             {
                 if (standalone_manual_active[ch] != 0)
@@ -2525,6 +2525,17 @@ static void standalone_update(uint64_t now_ms)
                 standalone_autoload_active[ch] = 0u;
                 standalone_autoload_t0_ms[ch] = 0ull;
             }
+        }
+
+        if ((standalone_autoload_active[ch] == 0u) &&
+            (standalone_prev_key[ch] == 0u) &&
+            first_switch_seen)
+        {
+            standalone_autoload_active[ch] = 1u;
+            standalone_autoload_t0_ms[ch] = now_ms;
+            standalone_manual_candidate[ch] = 0;
+            standalone_manual_active[ch] = 0;
+            standalone_manual_t0_ms[ch] = 0ull;
         }
 
         standalone_prev_key[ch] = ks;
@@ -2655,8 +2666,7 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks)
         const bool standalone_autoload =
             filament_channel_inserted[i] &&
             (standalone_autoload_active[i] != 0u) &&
-            (standalone_manual == false) &&
-            (MC_PULL_pct_f[i] < standalone_autoload_release_pct());
+            (standalone_manual == false);
 
         if (standalone_manual || standalone_autoload)
         {
