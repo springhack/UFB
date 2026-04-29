@@ -2446,7 +2446,6 @@ static inline void standalone_reset_channel(uint8_t ch)
 static inline int8_t standalone_manual_dir_from_pct(float pct)
 {
     if (pct <= STANDALONE_MANUAL_PULL_START_PCT) return -1;
-    if (pct >= STANDALONE_MANUAL_PUSH_START_PCT) return 1;
     return 0;
 }
 
@@ -2496,13 +2495,10 @@ static void standalone_update(uint64_t now_ms)
             else if (standalone_manual_candidate[ch] != desired)
             {
                 standalone_manual_candidate[ch] = desired;
-                standalone_manual_t0_ms[ch] = now_ms;
-            }
-            else if ((now_ms - standalone_manual_t0_ms[ch]) >= STANDALONE_MANUAL_HOLD_MS)
-            {
                 standalone_manual_active[ch] = desired;
                 standalone_autoload_active[ch] = 0u;
                 standalone_autoload_t0_ms[ch] = 0ull;
+                standalone_manual_t0_ms[ch] = now_ms;
             }
         }
         else
@@ -2511,23 +2507,14 @@ static void standalone_update(uint64_t now_ms)
             standalone_manual_t0_ms[ch] = 0ull;
         }
 
-        if ((standalone_manual_active[ch] == 0) &&
-            (ks != 0u) &&
-            (standalone_prev_key[ch] == 0u))
-        {
-            standalone_autoload_active[ch] = 1u;
-            standalone_autoload_t0_ms[ch] = now_ms;
-        }
-
         if (standalone_autoload_active[ch])
         {
             const uint64_t dt = now_ms - standalone_autoload_t0_ms[ch];
 
-            if ((ks == 0u) ||
-                (standalone_manual_active[ch] != 0) ||
+            if ((standalone_manual_active[ch] != 0) ||
                 (dt < STANDALONE_AUTOLOAD_DEBOUNCE_MS))
             {
-                if (ks == 0u || standalone_manual_active[ch] != 0)
+                if (standalone_manual_active[ch] != 0)
                 {
                     standalone_autoload_active[ch] = 0u;
                     standalone_autoload_t0_ms[ch] = 0ull;
