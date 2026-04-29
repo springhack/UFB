@@ -199,6 +199,11 @@ static inline uint8_t dm_key_to_state(uint8_t ch, float v)
     return 3u;                     // rare intermediate / undefined
 }
 
+static inline bool key_loaded(uint8_t ks)
+{
+    return ks == 1u;
+}
+
 #if BMCU_DM_TWO_MICROSWITCH
 // ---- DM autoload (two microswitch) ----
 static constexpr uint64_t DM_AUTO_S1_DEBOUNCE_MS       = 100ull;   // 0.1s
@@ -1367,7 +1372,7 @@ public:
                     else
         #endif
 
-            if (MC_ONLINE_key_stu[CHx] == 0)
+            if (!key_loaded(MC_ONLINE_key_stu[CHx]))
             {
                 if (!filament_channel_inserted[CHx] || !had_on_use)
                 {
@@ -1445,7 +1450,7 @@ public:
         {
             x = -dir * 900.0f;
         }
-        else if (MC_ONLINE_key_stu[CHx] != 0) // kanał aktywny i jest filament
+        else if (key_loaded(MC_ONLINE_key_stu[CHx])) // kanał aktywny i jest filament
         {
             if (motion == filament_motion_enum::filament_motion_before_pull_back)
             {
@@ -2220,7 +2225,7 @@ static void motor_motion_switch(uint64_t time_now)
         {
             filament_now_position[i] = filament_idle;
 
-            if (filament_channel_inserted[i] && (MC_ONLINE_key_stu[i] != 0 || g_last_on_use_exit_ms[i] != 0))
+            if (filament_channel_inserted[i] && (key_loaded(MC_ONLINE_key_stu[i]) || g_last_on_use_exit_ms[i] != 0))
                 MOTOR_CONTROL[i].set_motion(filament_motion_enum::filament_motion_pressure_ctrl_idle, 1000, time_now);
             else
                 MOTOR_CONTROL[i].set_motion(filament_motion_enum::filament_motion_stop, 1000, time_now);
@@ -2230,7 +2235,7 @@ static void motor_motion_switch(uint64_t time_now)
 
         if (num >= kChCount) continue;
 
-        if (MC_ONLINE_key_stu[num] != 0)
+        if (key_loaded(MC_ONLINE_key_stu[num]))
         {
             switch (motion)
             {
@@ -2418,12 +2423,12 @@ static inline void stu_apply_baseline(int error, uint64_t now_ms)
 #else
         if (error)
         {
-            if (MC_ONLINE_key_stu[i] != 0) MC_STU_RGB_set_latch(i, 0x38u, 0x35u, 0x32u, now_ms, 0u);
+            if (key_loaded(MC_ONLINE_key_stu[i])) MC_STU_RGB_set_latch(i, 0x38u, 0x35u, 0x32u, now_ms, 0u);
             else                           MC_STU_RGB_set_latch(i, 0x00u, 0x00u, 0x00u, now_ms, 0u);
         }
         else
         {
-            if (MC_ONLINE_key_stu[i] != 0 && filament_channel_inserted[i])
+            if (key_loaded(MC_ONLINE_key_stu[i]) && filament_channel_inserted[i])
                 MC_STU_RGB_set_latch(i, 0x38u, 0x35u, 0x32u, now_ms, 0u);
             else
                 MC_STU_RGB_set_latch(i, 0x00u, 0x00u, 0x00u, now_ms, 0u);
@@ -2467,7 +2472,7 @@ static void standalone_update(uint64_t now_ms)
 
         const uint8_t ks = MC_ONLINE_key_stu[ch];
         const float pct = MC_PULL_pct_f[ch];
-        const bool channel_empty = (ks == 0u);
+        const bool channel_empty = !key_loaded(ks);
         const bool first_switch_seen = (ks == 2u);
 
         if (!channel_empty || standalone_autoload_active[ch])
@@ -2817,7 +2822,7 @@ void Motion_control_run(int error)
     MC_PULL_ONLINE_read(now_ticks);
 
     const uint8_t loaded_ch = ams_state_get_loaded();
-    if ((loaded_ch < kChCount) && (MC_ONLINE_key_stu[loaded_ch] == 0u))
+    if ((loaded_ch < kChCount) && !key_loaded(MC_ONLINE_key_stu[loaded_ch]))
         ams_state_set_unloaded(loaded_ch);
 
     auto &A = ams[motion_control_ams_num];
@@ -2910,7 +2915,7 @@ void Motion_control_run(int error)
 
     for (uint8_t i = 0; i < kChCount; i++)
     {
-        if (MC_ONLINE_key_stu[i] != 0u) A.filament[i].online = true;
+        if (key_loaded(MC_ONLINE_key_stu[i])) A.filament[i].online = true;
         else if ((filament_now_position[i] == filament_redetect) || (filament_now_position[i] == filament_pulling_back))
             A.filament[i].online = true;
         else
