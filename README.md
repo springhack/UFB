@@ -1,4 +1,4 @@
-# filament buffer bmcu
+# UFB - Universal Filament Buffer base on BMCU
 
 这是一个给 BMCU 板子用的独立耗材缓冲器固件。
 
