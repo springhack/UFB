@@ -1,4 +1,5 @@
 #include "control/motion_control.h"
+#include "control/buffer_constants.h"
 #include "model/filament_state.h"
 #include "hardware/adc_dma.h"
 #include "storage/nvm_storage.h"
@@ -97,9 +98,9 @@ static inline __attribute__((always_inline)) uint64_t time_ms_fast(void)
 
 static inline float retract_mag_from_err(float err, float mag_max)
 {
-    constexpr float e0 = 0.10f;
-    constexpr float e1 = 0.35f;
-    constexpr float e2 = 2.35f;
+    constexpr float e0 = buffer_constants::retract_curve::deadband_err;
+    constexpr float e1 = buffer_constants::retract_curve::low_err;
+    constexpr float e2 = buffer_constants::retract_curve::high_err;
 
     if (err <= e0) return 0.0f;
 
@@ -108,13 +109,17 @@ static inline float retract_mag_from_err(float err, float mag_max)
     {
         float t = (err - e0) / (e1 - e0);
         t = clampf(t, 0.0f, 1.0f);
-        mag = 450.0f + 100.0f * t;
+        mag =
+            buffer_constants::retract_curve::low_pwm_start +
+            (buffer_constants::retract_curve::low_pwm_end - buffer_constants::retract_curve::low_pwm_start) * t;
     }
     else
     {
         float t = (err - e1) / (e2 - e1);
         t = clampf(t, 0.0f, 1.0f);
-        mag = 550.0f + 300.0f * t;
+        mag =
+            buffer_constants::retract_curve::low_pwm_end +
+            (buffer_constants::retract_curve::high_pwm_end - buffer_constants::retract_curve::low_pwm_end) * t;
     }
 
     if (mag > mag_max) mag = mag_max;
@@ -130,12 +135,14 @@ static inline uint8_t hyst_u8(uint8_t active, float v, float start, float stop)
 }
 
 
-static constexpr uint8_t  kChCount = 4;
-static constexpr int      PWM_lim  = 1000;
-static constexpr float    kAS5600_PI = 3.14159265358979323846f;
+static constexpr uint8_t  kChCount = buffer_constants::geometry::channel_count;
+static constexpr int      PWM_lim  = buffer_constants::geometry::pwm_limit;
+static constexpr float    kAS5600_PI = buffer_constants::geometry::as5600_pi;
 
 // stała do przeliczenia AS5600 - liczona raz
-static constexpr float kAS5600_MM_PER_CNT = -(kAS5600_PI * 7.5f) / 4096.0f;
+static constexpr float kAS5600_MM_PER_CNT =
+    -(kAS5600_PI * buffer_constants::geometry::as5600_wheel_diameter_mm) /
+    buffer_constants::geometry::as5600_counts_per_turn;
 
 // ===== AS5600 =====
 AS5600_soft_IIC_many MC_AS5600;
@@ -149,15 +156,15 @@ float speed_as5600[4] = {0, 0, 0, 0};
 static uint8_t g_as5600_good[4]     = {0,0,0,0};
 static uint8_t g_as5600_fail[4]     = {0,0,0,0};
 static uint8_t g_as5600_okstreak[4] = {0,0,0,0};
-static constexpr uint8_t kAS5600_FAIL_TRIP   = 3;
-static constexpr uint8_t kAS5600_OK_RECOVER  = 2;
+static constexpr uint8_t kAS5600_FAIL_TRIP   = buffer_constants::as5600_health::fail_trip;
+static constexpr uint8_t kAS5600_OK_RECOVER  = buffer_constants::as5600_health::ok_recover;
 static inline bool AS5600_is_good(uint8_t ch) { return g_as5600_good[ch] != 0; }
 
 // ---- liniowe zwalnianie końcówki + minimalny PWM ----
-static constexpr float PULL_V_FAST   = 60.0f;   // mm/s
-static constexpr float PULL_V_END    = 12.0f;   // mm/s na samym końcu
-static constexpr float PULL_RAMP_M   = 0.015f;  // 15mm strefa hamowania
-static constexpr float PULL_PWM_MIN  = 400.0f;  // "kop" przy pullback
+static constexpr float PULL_V_FAST   = buffer_constants::pullback::speed_fast_mm_s;
+static constexpr float PULL_V_END    = buffer_constants::pullback::speed_end_mm_s;
+static constexpr float PULL_RAMP_M   = buffer_constants::pullback::ramp_m;
+static constexpr float PULL_PWM_MIN  = buffer_constants::pullback::pwm_min;
 
 static float g_pull_remain_m[4]  = {0,0,0,0};
 static float g_pull_speed_set[4] = {-PULL_V_FAST,-PULL_V_FAST,-PULL_V_FAST,-PULL_V_FAST}; // mm/s (ujemne)
@@ -194,8 +201,8 @@ static inline uint8_t dm_key_to_state(uint8_t ch, float v)
     const float none_thr = MC_DM_KEY_NONE_THRESH[ch];
 
     if (v < none_thr) return 0u;   // none
-    if (v > 1.7f)     return 1u;   // both / second switch reached
-    if (v > 1.4f)     return 2u;   // first switch only
+    if (v > buffer_constants::key_state::loaded_threshold_volts) return 1u;   // both / second switch reached
+    if (v > buffer_constants::key_state::first_switch_threshold_volts) return 2u;   // first switch only
     return 3u;                     // rare intermediate / undefined
 }
 
@@ -206,17 +213,17 @@ static inline bool key_loaded(uint8_t ks)
 
 #if BMCU_DM_TWO_MICROSWITCH
 // ---- DM autoload (two microswitch) ----
-static constexpr uint64_t DM_AUTO_S1_DEBOUNCE_MS       = 100ull;   // 0.1s
-static constexpr uint64_t DM_AUTO_S1_TIMEOUT_MS        = 5000ull;  // 5s
-static constexpr uint64_t DM_AUTO_S1_FAIL_RETRACT_MS   = 1500ull;  // 1.5s
+static constexpr uint64_t DM_AUTO_S1_DEBOUNCE_MS       = buffer_constants::dm_autoload::stage1_debounce_ms;
+static constexpr uint64_t DM_AUTO_S1_TIMEOUT_MS        = buffer_constants::dm_autoload::stage1_timeout_ms;
+static constexpr uint64_t DM_AUTO_S1_FAIL_RETRACT_MS   = buffer_constants::dm_autoload::stage1_fail_retract_ms;
 
-static constexpr float    DM_AUTO_S2_TARGET_M          = 0.120f;   // 120mm
-static constexpr float    DM_AUTO_BUF_ABORT_PCT        = 75.0f;    // abort push
-static constexpr float    DM_AUTO_BUF_RECOVER_PCT      = 50.2f;    // retract-to (try 1/2)
-static constexpr uint64_t DM_AUTO_FAIL_EXTRA_MS        = 1500ull;  // extra retract after fail
-static constexpr float    DM_AUTO_PWM_PUSH             = 900.0f;   // push strength
-static constexpr float    DM_AUTO_PWM_PULL             = 900.0f;   // retract strength
-static constexpr float    DM_AUTO_IDLE_LIM             = 950.0f;   // clamp only during autoload
+static constexpr float    DM_AUTO_S2_TARGET_M          = buffer_constants::dm_autoload::stage2_target_m;
+static constexpr float    DM_AUTO_BUF_ABORT_PCT        = buffer_constants::dm_autoload::buffer_abort_pct;
+static constexpr float    DM_AUTO_BUF_RECOVER_PCT      = buffer_constants::dm_autoload::buffer_recover_pct;
+static constexpr uint64_t DM_AUTO_FAIL_EXTRA_MS        = buffer_constants::dm_autoload::fail_extra_ms;
+static constexpr float    DM_AUTO_PWM_PUSH             = buffer_constants::dm_autoload::pwm_push;
+static constexpr float    DM_AUTO_PWM_PULL             = buffer_constants::dm_autoload::pwm_pull;
+static constexpr float    DM_AUTO_IDLE_LIM             = buffer_constants::dm_autoload::idle_pwm_limit;
 
 enum : uint8_t
 {
@@ -242,14 +249,14 @@ static float    dm_auto_last_m[4]       = {0,0,0,0};
 static uint64_t dm_loaded_drop_t0_ms[4] = {0ull,0ull,0ull,0ull};
 #endif
 
-static constexpr float    AUTO_UNLOAD_START_PCT      = 80.0f;
-static constexpr float    AUTO_UNLOAD_NEUTRAL_LO_PCT = 45.0f;
-static constexpr float    AUTO_UNLOAD_NEUTRAL_HI_PCT = 55.0f;
-static constexpr float    AUTO_UNLOAD_ABORT_PCT      = 35.0f;
-static constexpr uint64_t AUTO_UNLOAD_ARM_MS         = 1000ull;
-static constexpr uint64_t AUTO_UNLOAD_MAX_MS         = 15000ull;
-static constexpr uint64_t AUTO_UNLOAD_EMPTY_MS       = 1500ull;
-static constexpr float    AUTO_UNLOAD_PWM_PULL       = 850.0f;
+static constexpr float    AUTO_UNLOAD_START_PCT      = buffer_constants::auto_unload::start_pct;
+static constexpr float    AUTO_UNLOAD_NEUTRAL_LO_PCT = buffer_constants::auto_unload::neutral_lo_pct;
+static constexpr float    AUTO_UNLOAD_NEUTRAL_HI_PCT = buffer_constants::auto_unload::neutral_hi_pct;
+static constexpr float    AUTO_UNLOAD_ABORT_PCT      = buffer_constants::auto_unload::abort_pct;
+static constexpr uint64_t AUTO_UNLOAD_ARM_MS         = buffer_constants::auto_unload::arm_ms;
+static constexpr uint64_t AUTO_UNLOAD_MAX_MS         = buffer_constants::auto_unload::max_ms;
+static constexpr uint64_t AUTO_UNLOAD_EMPTY_MS       = buffer_constants::auto_unload::empty_ms;
+static constexpr float    AUTO_UNLOAD_PWM_PULL       = buffer_constants::auto_unload::pwm_pull;
 
 static uint8_t  auto_unload_arm[4]          = {0,0,0,0};
 static uint8_t  auto_unload_active[4]       = {0,0,0,0};
@@ -258,28 +265,28 @@ static uint64_t auto_unload_arm_t0_ms[4]    = {0ull,0ull,0ull,0ull};
 static uint64_t auto_unload_active_t0_ms[4] = {0ull,0ull,0ull,0ull};
 static uint64_t auto_unload_empty_t0_ms[4]  = {0ull,0ull,0ull,0ull};
 
-// Standalone Hall mode:
+// Standalone buffer mode:
 // - idle = passive buffer
-// - new filament insert = auto feed-in
-// - hold pull/push for 1s = manual continuous feed/retract until released
-static constexpr uint64_t STANDALONE_AUTOLOAD_DEBOUNCE_MS    = 80ull;
-static constexpr uint64_t STANDALONE_AUTOLOAD_MAX_MS         = 6000ull;
+// - first microswitch = auto feed-in sequence
+// - empty channel + feed-side imbalance = keep feeding until balanced
+static constexpr uint64_t STANDALONE_AUTOLOAD_DEBOUNCE_MS    = buffer_constants::standalone::autoload_debounce_ms;
+static constexpr uint64_t STANDALONE_AUTOLOAD_MAX_MS         = buffer_constants::standalone::autoload_max_ms;
 #if FILAMENT_BUFFER_BMCU_HIGH_FORCE
-static constexpr float    STANDALONE_AUTOLOAD_PWM_PUSH       = 960.0f;
+static constexpr float    STANDALONE_AUTOLOAD_PWM_PUSH       = buffer_constants::standalone::autoload_pwm_push_high_force;
 #else
-static constexpr float    STANDALONE_AUTOLOAD_PWM_PUSH       = 850.0f;
+static constexpr float    STANDALONE_AUTOLOAD_PWM_PUSH       = buffer_constants::standalone::autoload_pwm_push_default;
 #endif
-static constexpr float    STANDALONE_MANUAL_PULL_START_PCT   = 30.0f;
-static constexpr float    STANDALONE_MANUAL_PULL_RELEASE_PCT = 40.0f;
-static constexpr float    STANDALONE_MANUAL_PUSH_START_PCT   = 70.0f;
-static constexpr float    STANDALONE_MANUAL_PUSH_RELEASE_PCT = 60.0f;
-static constexpr uint64_t STANDALONE_MANUAL_HOLD_MS          = 1000ull;
+static constexpr float    STANDALONE_MANUAL_PULL_START_PCT   = buffer_constants::standalone::manual_feed_start_pct;
+static constexpr float    STANDALONE_MANUAL_PULL_RELEASE_PCT = buffer_constants::standalone::manual_feed_release_pct;
+static constexpr float    STANDALONE_MANUAL_PUSH_START_PCT   = buffer_constants::standalone::manual_retract_start_pct;
+static constexpr float    STANDALONE_MANUAL_PUSH_RELEASE_PCT = buffer_constants::standalone::manual_retract_release_pct;
+static constexpr uint64_t STANDALONE_MANUAL_HOLD_MS          = buffer_constants::standalone::manual_hold_ms;
 #if FILAMENT_BUFFER_BMCU_HIGH_FORCE
-static constexpr float    STANDALONE_MANUAL_PWM_FEED         = 950.0f;
-static constexpr float    STANDALONE_MANUAL_PWM_RETRACT      = 900.0f;
+static constexpr float    STANDALONE_MANUAL_PWM_FEED         = buffer_constants::standalone::manual_feed_pwm_high_force;
+static constexpr float    STANDALONE_MANUAL_PWM_RETRACT      = buffer_constants::standalone::manual_retract_pwm_high_force;
 #else
-static constexpr float    STANDALONE_MANUAL_PWM_FEED         = 850.0f;
-static constexpr float    STANDALONE_MANUAL_PWM_RETRACT      = 850.0f;
+static constexpr float    STANDALONE_MANUAL_PWM_FEED         = buffer_constants::standalone::manual_feed_pwm_default;
+static constexpr float    STANDALONE_MANUAL_PWM_RETRACT      = buffer_constants::standalone::manual_retract_pwm_default;
 #endif
 
 static uint8_t  standalone_prev_key[4]         = {0u,0u,0u,0u};
@@ -291,28 +298,28 @@ static uint64_t standalone_manual_t0_ms[4]     = {0ull,0ull,0ull,0ull};
 
 bool filament_channel_inserted[4]       = {false, false, false, false}; // czy kanał fizycznie wpięty
 
-static constexpr float MC_PULL_PIDP_PCT = 25.0f;
+static constexpr float MC_PULL_PIDP_PCT = buffer_constants::load_control::pidp_pct;
 
-static constexpr int MC_PULL_DEADBAND_PCT_LOW  = 30;
-static constexpr int MC_PULL_DEADBAND_PCT_HIGH = 70;
+static constexpr int MC_PULL_DEADBAND_PCT_LOW  = buffer_constants::load_control::deadband_pct_low;
+static constexpr int MC_PULL_DEADBAND_PCT_HIGH = buffer_constants::load_control::deadband_pct_high;
 
 // ================ LOAD CONTROL ======================
 // High-force mode only raises motor output. Trigger thresholds and hold
 // behavior stay identical to the standard profile to preserve the same
 // buffer sensitivity.
-static constexpr int   MC_LOAD_S1_FAST_PCT       = 85;
-static constexpr int   MC_LOAD_S1_HARD_STOP_PCT  = 95;  // bezpiecznik
-static constexpr int   MC_LOAD_S1_HARD_HYS       = 2;   // wróć dopiero < (HARD_STOP - HYS)
+static constexpr int   MC_LOAD_S1_FAST_PCT       = buffer_constants::load_control::stage1_fast_pct;
+static constexpr int   MC_LOAD_S1_HARD_STOP_PCT  = buffer_constants::load_control::stage1_hard_stop_pct;  // bezpiecznik
+static constexpr int   MC_LOAD_S1_HARD_HYS       = buffer_constants::load_control::stage1_hard_hys;   // wróć dopiero < (HARD_STOP - HYS)
 // Stage2 (hold_load)
-static constexpr float MC_LOAD_S2_HOLD_TARGET_PCT    = 90.0f;
-static constexpr float MC_LOAD_S2_HOLD_BAND_LO_DELTA = 0.3f;   // push_hi = hold_target - delta
-static constexpr float MC_LOAD_S2_PUSH_START_PCT     = 80.0f;  // start push PWM
-static constexpr float MC_LOAD_S2_PWM_HI             = 480.0f;
-static constexpr float MC_LOAD_S2_PWM_LO             = 1000.0f;
+static constexpr float MC_LOAD_S2_HOLD_TARGET_PCT    = buffer_constants::load_control::hold_target_pct;
+static constexpr float MC_LOAD_S2_HOLD_BAND_LO_DELTA = buffer_constants::load_control::hold_band_lo_delta;   // push_hi = hold_target - delta
+static constexpr float MC_LOAD_S2_PUSH_START_PCT     = buffer_constants::load_control::push_start_pct;  // start push PWM
+static constexpr float MC_LOAD_S2_PWM_HI             = buffer_constants::load_control::pwm_hi;
+static constexpr float MC_LOAD_S2_PWM_LO             = buffer_constants::load_control::pwm_lo;
 // ===== ON_USE CONTROL =====
-static constexpr float MC_ON_USE_TARGET_PCT    = 52.0f;
-static constexpr float MC_ON_USE_BAND_LO_DELTA = 0.2f;  // band_lo = target - delta
-static constexpr float MC_ON_USE_BAND_HI_PCT   = 60.0f;
+static constexpr float MC_ON_USE_TARGET_PCT    = buffer_constants::load_control::on_use_target_pct;
+static constexpr float MC_ON_USE_BAND_LO_DELTA = buffer_constants::load_control::on_use_band_lo_delta;  // band_lo = target - delta
+static constexpr float MC_ON_USE_BAND_HI_PCT   = buffer_constants::load_control::on_use_band_hi_pct;
 // ====================================================
 
 static inline float standalone_autoload_target_pct()
@@ -325,10 +332,10 @@ static inline float standalone_autoload_release_pct()
     return MC_LOAD_S2_HOLD_TARGET_PCT - 1.0f;
 }
 
-static constexpr uint32_t CAL_RESET_HOLD_MS     = 5000;
-static constexpr int      CAL_RESET_PCT_THRESH  = 15;
-static constexpr float    CAL_RESET_V_DELTA     = 0.10f;
-static constexpr float    CAL_RESET_NEAR_MIN    = 0.03f;
+static constexpr uint32_t CAL_RESET_HOLD_MS     = buffer_constants::calibration_reset::hold_ms;
+static constexpr int      CAL_RESET_PCT_THRESH  = buffer_constants::calibration_reset::pct_thresh;
+static constexpr float    CAL_RESET_V_DELTA     = buffer_constants::calibration_reset::v_delta;
+static constexpr float    CAL_RESET_NEAR_MIN    = buffer_constants::calibration_reset::near_min;
 
 static int      g_hold_ch = -1;
 static uint32_t g_hold_t0_ticks = 0;
@@ -1437,7 +1444,7 @@ public:
                 if (MC_PULL_stu[CHx] != 0)
                 {
                     const float pct = MC_PULL_pct_f[CHx];
-                    x = dir * PID_pressure.caculate(pct - 50.0f, time_E);
+                    x = dir * PID_pressure.caculate(pct - buffer_constants::load_control::on_use_hold_target_pct, time_E);
                 }
                 else
                 {
@@ -1448,14 +1455,14 @@ public:
         }
         else if (motion == filament_motion_enum::filament_motion_redetect) // wyjście do braku filamentu -> ponowne podanie
         {
-            x = -dir * 900.0f;
+            x = -dir * buffer_constants::dm_autoload::pwm_push;
         }
         else if (key_loaded(MC_ONLINE_key_stu[CHx])) // kanał aktywny i jest filament
         {
             if (motion == filament_motion_enum::filament_motion_before_pull_back)
             {
                 const float pct = MC_PULL_pct_f[CHx];
-                constexpr float target = 50.0f;
+                constexpr float target = buffer_constants::load_control::on_use_hold_target_pct;
 
                 const float start_retract = target + 0.25f;
                 const float stop_retract  = target + 0.00f;
@@ -1476,7 +1483,7 @@ public:
                     on_use_need_move = true;
                     on_use_abs_err   = err;
 
-                    const float mag = retract_mag_from_err(err, 850.0f);
+                    const float mag = retract_mag_from_err(err, buffer_constants::retract_curve::high_pwm_end);
 
                     x = dir * mag;          // tylko cofanie
                     if (x * dir < 0.0f) x = 0.0f;
@@ -1543,10 +1550,10 @@ public:
                     }
                 }
 
-                constexpr float pwm_lo          = 380.0f;
-                constexpr float pct_fast_onuse  = 50.0f;
-                constexpr float pwm_fast_onuse  = 900.0f;
-                constexpr float pwm_cap         = 900.0f;
+                constexpr float pwm_lo          = buffer_constants::load_control::on_use_pwm_lo;
+                constexpr float pct_fast_onuse  = buffer_constants::load_control::on_use_fast_pct;
+                constexpr float pwm_fast_onuse  = buffer_constants::load_control::on_use_fast_pwm;
+                constexpr float pwm_cap         = buffer_constants::load_control::on_use_pwm_cap;
 
                 constexpr float slope =
                     (pwm_fast_onuse - pwm_lo) / ((target_pct - MC_ON_USE_BAND_LO_DELTA) - pct_fast_onuse);
@@ -1593,14 +1600,16 @@ public:
                     if (x >  lim_f) x =  lim_f;
                     if (x < -lim_f) x = -lim_f;
 
-                    constexpr float retrig = 55.0f;
+                    constexpr float retrig = buffer_constants::load_control::on_use_retrigger_pct;
                     if (err > 0.0f && pct >= retrig)
                     {
                         float mul = 1.0f + 0.5f * (pct - retrig);
                         if (mul > 3.0f) mul = 3.0f;
                         x *= mul;
-                        if (x >  950.0f) x =  950.0f;
-                        if (x < -950.0f) x = -950.0f;
+                        if (x >  buffer_constants::load_control::on_use_retrigger_pwm_cap)
+                            x =  buffer_constants::load_control::on_use_retrigger_pwm_cap;
+                        if (x < -buffer_constants::load_control::on_use_retrigger_pwm_cap)
+                            x = -buffer_constants::load_control::on_use_retrigger_pwm_cap;
                     }
                 }
             }
@@ -1623,7 +1632,7 @@ public:
 
                     if (!send_len_abort)
                     {
-                        constexpr float SEND_MAX_M = 10.0f;
+                        constexpr float SEND_MAX_M = buffer_constants::load_control::send_max_m;
                         const float moved_m = absf(ams[motion_control_ams_num].filament[CHx].meters - send_start_m);
                         if (moved_m >= SEND_MAX_M) send_len_abort = 1;
                     }
@@ -1697,9 +1706,9 @@ public:
                     }
                     else
                     {
-                        constexpr uint64_t SEND_SOFTSTART_MS = 300ull;
-                        constexpr float    V0 = 10.0f;
-                        constexpr float    V  = 60.0f;
+                        constexpr uint64_t SEND_SOFTSTART_MS = buffer_constants::load_control::send_softstart_ms;
+                        constexpr float    V0 = buffer_constants::load_control::send_softstart_v0;
+                        constexpr float    V  = buffer_constants::load_control::send_softstart_v;
 
                         const uint64_t dt = (send_start_ms != 0) ? (now_ms - send_start_ms) : 1000000ull;
 
@@ -1782,11 +1791,11 @@ public:
         if (motion == filament_motion_enum::filament_motion_pressure_ctrl_idle)
         {
         #if BMCU_DM_TWO_MICROSWITCH
-            const float lim = dm_autoload_active ? DM_AUTO_IDLE_LIM : 800.0f;
+            const float lim = dm_autoload_active ? DM_AUTO_IDLE_LIM : buffer_constants::load_control::stop_pwm_limit;
             if (x >  lim) x =  lim;
             if (x < -lim) x = -lim;
         #else
-            constexpr float PWM_IDLE_LIM = 800.0f;
+            constexpr float PWM_IDLE_LIM = buffer_constants::load_control::stop_pwm_limit;
             if (x >  PWM_IDLE_LIM) x =  PWM_IDLE_LIM;
             if (x < -PWM_IDLE_LIM) x = -PWM_IDLE_LIM;
         #endif

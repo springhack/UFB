@@ -2,94 +2,70 @@
 
 这是一个给 BMCU 板子用的独立耗材缓冲器固件。
 
-它的目标很简单：不接打印机通信，不跑 AMS 协议，只把这块板子当成一个带电机的耗材缓冲器来用。
+它不和打印机通信，不跑 AMS 协议，也不要求接到 Bambu 打印机上。这个仓库的目标只有一个：把这块板子改成一个离线的、可独立工作的耗材缓冲器控制板。
 
-如果你是第一次打开这个仓库，可以直接把它理解成：
+## 当前逻辑
 
-- 这不是原版 AMS 固件。
-- 这是一个已经裁剪过的离线版本。
-- 你只需要关心怎么编译、怎么刷写、选哪个模式。
+这版固件现在的行为是：
 
-## 这个固件能做什么
+- 平时按独立耗材缓冲器工作。
+- 第一个微动触发时，启动一次自动进料。
+- 自动进料一旦开始，会先完整执行完，再回到普通缓冲器逻辑。
+- 正常缓冲器补料和自动进料使用同样的前进速度。
+- 高阻力版只提高电机输出，不改变触发灵敏性和整体逻辑。
 
-- 平时作为一个离线耗材缓冲器工作。
-- 插入新料后自动吸入一点，把缓冲器拉回平衡区。
-- 空通道时，缓冲器持续拉动或推动超过 `1s`，可以进入手动连续进料或退料。
-- 通道里已经有料时，会禁用这套手动连续进退料触发，避免打印时误动作。
+这版不做的事情：
 
-## 这个固件不做什么
-
-- 不和打印机通信。
-- 不依赖 Bambu AMS 总线。
-- 不需要把它接到打印机上才能工作。
-
-如果你只是想把这块板子当成一个“独立耗材缓冲器控制板”，那这个仓库就是给这个用途准备的。
+- 不和打印机通信
+- 不依赖 AMS 总线
+- 不暴露用户侧“手动长按进退料”模式
 
 ## 先看你该用哪个版本
 
-这个仓库目前有两个编译环境。
-
 ### `filament_buffer_bmcu`
 
-标准版。
-
-适合：
-
-- 常规长度的 PTFE 管
-- 阻力普通的送丝路径
-- 你已经验证标准版工作正常
+标准版，适合普通 PTFE 长度和阻力。
 
 ### `filament_buffer_bmcu_high_force`
 
-高阻力版。
+高阻力版，适合更长、更弯、摩擦更大的送丝路径。
 
-适合：
-
-- PTFE 管更长
-- 路径更弯
-- 摩擦更大
-- 你希望电机推进更有力
-
-这个版本现在只提高电机输出，不改变标准版的触发灵敏性、缓冲阈值和整体动作逻辑。
-
-直观差异只有这 3 个参数：
+这个版本现在只提高电机输出，不改灵敏性。和标准版相比，关键差异是：
 
 ```cpp
 // 标准版
-STANDALONE_AUTOLOAD_PWM_PUSH  = 850
-STANDALONE_MANUAL_PWM_FEED    = 850
-STANDALONE_MANUAL_PWM_RETRACT = 850
+autoload/feed pwm = 850
+retract pwm       = 850
 
 // 高阻力版
-STANDALONE_AUTOLOAD_PWM_PUSH  = 960
-STANDALONE_MANUAL_PWM_FEED    = 950
-STANDALONE_MANUAL_PWM_RETRACT = 900
+autoload/feed pwm = 960
+retract pwm       = 900
 ```
 
 ## 你需要准备什么
 
-在开始前，你需要：
+开始前需要：
 
 - `git`
 - `python3`
 - `platformio`
-- 板子对应的刷写工具 `wchisp`
+- 本地可执行的 `wchisp`
 
-安装 PlatformIO 的常见方式：
+安装 PlatformIO：
 
 ```bash
 python3 -m pip install -U platformio
 ```
 
-安装完可以检查一下：
+确认安装：
 
 ```bash
 pio --version
 ```
 
-## 第一次编译
+## 如何编译
 
-建议在仓库根目录执行命令。
+在仓库根目录执行。
 
 编译标准版：
 
@@ -103,68 +79,48 @@ env PLATFORMIO_CORE_DIR=$PWD/.platformio pio run -e filament_buffer_bmcu
 env PLATFORMIO_CORE_DIR=$PWD/.platformio pio run -e filament_buffer_bmcu_high_force
 ```
 
-生成出来的固件在这里：
+生成产物：
 
 ```text
 .pio/build/filament_buffer_bmcu/firmware.bin
 .pio/build/filament_buffer_bmcu_high_force/firmware.bin
 ```
 
-说明：
+## 如何刷写
 
-- 第一次编译时，PlatformIO 会自动下载工具链和框架。
-- 这里把 `PLATFORMIO_CORE_DIR` 指到仓库内的 `.platformio/`，是为了把缓存留在项目目录里，避免写到用户主目录。
-
-## 如何刷写到板子
-
-本仓库默认不提交 `wchisp`，所以你需要自己在本地准备它。
-
-先确认板子能被识别：
+先确认设备处于 ISP 模式并能被识别：
 
 ```bash
 ./wchisp probe
 ```
 
-刷写标准版：
+刷标准版：
 
 ```bash
 ./wchisp flash .pio/build/filament_buffer_bmcu/firmware.bin
 ```
 
-刷写高阻力版：
+刷高阻力版：
 
 ```bash
 ./wchisp flash .pio/build/filament_buffer_bmcu_high_force/firmware.bin
 ```
 
-如果刷写成功，通常会看到类似输出：
+刷写成功后通常会看到：
 
 ```text
 Verify OK
 Device reset
 ```
 
-## 上电后会发生什么
-
-- 开机后会做静默校准。
-- 不会再执行旧版那种逐通道等待手动拨动的交互式校准。
-- 如果某一路传感器异常，仍然可能通过 LED 表现出来。
-
-也就是说，正常情况下你只需要：
-
-1. 编译一个版本
-2. 刷进去
-3. 上电测试
-
 ## 仓库结构
-
-如果你只是使用固件，这一节可以先跳过。
 
 ```text
 src/
   app/
     main.cpp
   control/
+    buffer_constants.h
     hall_calibration.cpp
     hall_calibration.h
     motion_control.cpp
@@ -194,24 +150,18 @@ reference/
   original_bmcu/
 ```
 
-几个最重要的文件是：
+最关键的文件：
 
-- `src/app/main.cpp`
-  启动流程和主循环入口。
-- `src/control/motion_control.cpp`
-  缓冲器主逻辑、电机控制、自动吸料、手动进退料逻辑都在这里。
-- `src/control/hall_calibration.cpp`
-  上电校准逻辑。
+- `src/app/main.cpp`：启动流程和主循环入口
+- `src/control/motion_control.cpp`：缓冲器主逻辑、电机控制、自动进料
+- `src/control/buffer_constants.h`：集中管理当前固件里的行为参数和阈值
+- `src/control/hall_calibration.cpp`：上电校准逻辑
 
 ## `reference/original_bmcu` 是什么
 
-这个目录只是原始上游项目的参考副本。
+这是原始上游项目的参考副本，只用于对照原始实现，不参与当前固件编译。
 
-你可以把它理解成：
+可以把它理解成：
 
-- 现在这个仓库是“我们真正要用的独立版本”
-- `reference/original_bmcu` 是“留着查资料的原项目”
-
-它的作用只是方便对照和参考，不参与当前固件编译，也不是当前功能的一部分。
-
-如果你完全不关心原项目，可以先忽略这个目录。
+- 当前仓库是你真正要刷进板子的独立版本
+- `reference/original_bmcu` 只是查资料用的参考代码
