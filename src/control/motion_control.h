@@ -43,6 +43,14 @@ extern bool    filament_channel_inserted[4];
 #define FILAMENT_BUFFER_BMCU_HIGH_FORCE 0
 #endif
 
+#define UFB_LED_RGB_OFF     0x00u, 0x00u, 0x00u
+#define UFB_LED_RGB_WHITE   0x60u, 0x60u, 0x60u
+#define UFB_LED_RGB_BLUE    0x00u, 0x00u, 0xFFu
+#define UFB_LED_RGB_RED     0xFFu, 0x00u, 0x00u
+#define UFB_LED_RGB_GREEN   0x00u, 0xD5u, 0x2Au
+#define UFB_LED_RGB_CYAN    0x00u, 0xB0u, 0xFFu
+#define UFB_LED_RGB_PURPLE  0xA0u, 0x2Du, 0xFFu
+
 #ifndef motion_control_ams_num
 #define motion_control_ams_num BAMBU_BUS_AMS_NUM
 #endif

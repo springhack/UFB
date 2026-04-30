@@ -191,9 +191,28 @@ static inline __attribute__((always_inline)) void MC_STU_RGB_set_latch(uint8_t c
     if (!g_on_use_low_latch[ch]) { MC_STU_RGB_set(ch, r, g, b); return; }
 
     if (!blink || (((now_ms / 1000ull) & 1ull) != 0ull))
-        MC_STU_RGB_set(ch, 0xFFu, 0x00u, 0x00u);
+        MC_STU_RGB_set(ch, UFB_LED_RGB_RED);
     else
         MC_STU_RGB_set(ch, r, g, b);
+}
+
+static inline void set_online_led_from_key_state(uint8_t ch, uint8_t ks, uint64_t now_ms)
+{
+    switch (ks)
+    {
+    case 0u:
+        MC_PULL_ONLINE_RGB_set(ch, UFB_LED_RGB_OFF, false);
+        break;
+    case 1u:
+        MC_PULL_ONLINE_RGB_set(ch, UFB_LED_RGB_WHITE, false);
+        break;
+    case 2u:
+        MC_PULL_ONLINE_RGB_set(ch, UFB_LED_RGB_BLUE, false);
+        break;
+    default:
+        MC_PULL_ONLINE_RGB_set(ch, (((now_ms / 250ull) & 1ull) != 0ull) ? 0xFFu : 0x00u, 0x00u, 0x00u, false);
+        break;
+    }
 }
 
 static inline uint8_t dm_key_to_state(uint8_t ch, float v)
@@ -271,6 +290,7 @@ static uint64_t auto_unload_empty_t0_ms[4]  = {0ull,0ull,0ull,0ull};
 // - empty channel + feed-side imbalance = keep feeding until balanced
 static constexpr uint64_t STANDALONE_AUTOLOAD_DEBOUNCE_MS    = buffer_constants::standalone::autoload_debounce_ms;
 static constexpr uint64_t STANDALONE_AUTOLOAD_MAX_MS         = buffer_constants::standalone::autoload_max_ms;
+static constexpr uint64_t STANDALONE_AUTOLOAD_ZERO_WINDOW_MS = 100ull;
 #if FILAMENT_BUFFER_BMCU_HIGH_FORCE
 static constexpr float    STANDALONE_AUTOLOAD_PWM_PUSH       = buffer_constants::standalone::autoload_pwm_push_high_force;
 #else
@@ -292,6 +312,7 @@ static constexpr float    STANDALONE_MANUAL_PWM_RETRACT      = buffer_constants:
 static uint8_t  standalone_prev_key[4]         = {0u,0u,0u,0u};
 static uint8_t  standalone_autoload_active[4]  = {0u,0u,0u,0u};
 static uint64_t standalone_autoload_t0_ms[4]   = {0ull,0ull,0ull,0ull};
+static uint64_t standalone_last_zero_ms[4]     = {0ull,0ull,0ull,0ull};
 static int8_t   standalone_manual_candidate[4] = {0,0,0,0};   // -1=feed, +1=retract
 static int8_t   standalone_manual_active[4]    = {0,0,0,0};   // -1=feed, +1=retract
 static uint64_t standalone_manual_t0_ms[4]     = {0ull,0ull,0ull,0ull};
@@ -2153,7 +2174,7 @@ static bool motor_motion_filamnet_pull_back_to_online_key(uint64_t time_now)
         {
         case filament_pulling_back:
         {
-            MC_STU_RGB_set_latch(i, 0xFFu, 0x00u, 0xFFu, time_now, 1u);
+            MC_STU_RGB_set_latch(i, UFB_LED_RGB_PURPLE, time_now, 1u);
 
             const float target = filament_pull_back_target[i];
             const float d = absf(A.filament[i].meters - filament_pull_back_meters[i]);
@@ -2194,7 +2215,7 @@ static bool motor_motion_filamnet_pull_back_to_online_key(uint64_t time_now)
 
         case filament_redetect:
         {
-            MC_STU_RGB_set_latch(i, 0xFFu, 0xFFu, 0x00u, time_now, 0u);
+            MC_STU_RGB_set_latch(i, UFB_LED_RGB_GREEN, time_now, 0u);
 
             if (MC_ONLINE_key_stu[i] == 0)
             {
@@ -2252,7 +2273,7 @@ static void motor_motion_switch(uint64_t time_now)
             {
                 filament_now_position[num] = filament_using;
                 MOTOR_CONTROL[num].set_motion(filament_motion_enum::filament_motion_before_on_use, 300, time_now);
-                MC_STU_RGB_set_latch(num, 0xFFu, 0xFFu, 0x00u, time_now, 0u);
+                MC_STU_RGB_set_latch(num, UFB_LED_RGB_GREEN, time_now, 0u);
                 break;
             }
 
@@ -2277,12 +2298,12 @@ static void motor_motion_switch(uint64_t time_now)
                     else
                     {
                         MOTOR_CONTROL[num].set_motion(filament_motion_enum::filament_motion_stop, 100, time_now);
-                        MC_STU_RGB_set_latch(num, 0x00u, 0xD5u, 0x2Au, time_now, 0u);
+                        MC_STU_RGB_set_latch(num, UFB_LED_RGB_RED, time_now, 0u);
                         break;
                     }
                 }
 
-                MC_STU_RGB_set_latch(num, 0x00u, 0xD5u, 0x2Au, time_now, 0u);
+                MC_STU_RGB_set_latch(num, UFB_LED_RGB_GREEN, time_now, 0u);
                 filament_now_position[num] = filament_sending_out;
                 MOTOR_CONTROL[num].set_motion(filament_motion_enum::filament_motion_send, 100, time_now);
                 break;
@@ -2290,7 +2311,7 @@ static void motor_motion_switch(uint64_t time_now)
 
             case _filament_motion::pull_back:
             {
-                MC_STU_RGB_set_latch(num, 0xA0u, 0x2Du, 0xFFu, time_now, 1u);
+                MC_STU_RGB_set_latch(num, UFB_LED_RGB_PURPLE, time_now, 1u);
                 filament_now_position[num] = filament_pulling_back;
 
                 filament_pull_back_meters[num] = A.filament[num].meters;
@@ -2324,7 +2345,7 @@ static void motor_motion_switch(uint64_t time_now)
 
             case _filament_motion::before_pull_back:
             {
-                MC_STU_RGB_set_latch(num, 0xFFu, 0xA0u, 0x00u, time_now, 1u);
+                MC_STU_RGB_set_latch(num, UFB_LED_RGB_PURPLE, time_now, 1u);
 
                 if (filament_now_position[num] != filament_before_pull_back)
                 {
@@ -2366,7 +2387,7 @@ static void motor_motion_switch(uint64_t time_now)
             {
                 filament_now_position[num] = filament_using;
                 MOTOR_CONTROL[num].set_motion(filament_motion_enum::filament_motion_pressure_ctrl_on_use, 300, time_now);
-                MC_STU_RGB_set_latch(num, 0x00u, 0xB0u, 0xFFu, time_now, 0u);
+                MC_STU_RGB_set_latch(num, UFB_LED_RGB_CYAN, time_now, 0u);
                 break;
             }
 
@@ -2378,18 +2399,18 @@ static void motor_motion_switch(uint64_t time_now)
                 if (g_on_use_jam_latch[num])
                 {
                     MOTOR_CONTROL[num].set_motion(filament_motion_enum::filament_motion_stop, 100, time_now);
-                    MC_STU_RGB_set_latch(num, 0x38u, 0x35u, 0x32u, time_now, 0u);
+                    MC_STU_RGB_set_latch(num, UFB_LED_RGB_RED, time_now, 0u);
                     break;
                 }
 
                 MOTOR_CONTROL[num].set_motion(filament_motion_enum::filament_motion_pressure_ctrl_idle, 100, time_now);
 
 #if BMCU_DM_TWO_MICROSWITCH
-                if (dm_fail_latch[num])      MC_STU_RGB_set_latch(num, 0xFFu, 0x00u, 0x00u, time_now, 0u);
-                else if (dm_loaded[num])     MC_STU_RGB_set_latch(num, 0x38u, 0x35u, 0x32u, time_now, 0u);
-                else                         MC_STU_RGB_set_latch(num, 0x00u, 0x00u, 0x00u, time_now, 0u);
+                if (dm_fail_latch[num])      MC_STU_RGB_set_latch(num, UFB_LED_RGB_RED, time_now, 0u);
+                else if (dm_loaded[num])     MC_STU_RGB_set_latch(num, UFB_LED_RGB_OFF, time_now, 0u);
+                else                         MC_STU_RGB_set_latch(num, UFB_LED_RGB_OFF, time_now, 0u);
 #else
-                MC_STU_RGB_set_latch(num, 0x38u, 0x35u, 0x32u, time_now, 0u);
+                MC_STU_RGB_set_latch(num, UFB_LED_RGB_OFF, time_now, 0u);
 #endif
                 break;
             }
@@ -2399,7 +2420,7 @@ static void motor_motion_switch(uint64_t time_now)
         {
             filament_now_position[num] = filament_idle;
             MOTOR_CONTROL[num].set_motion(filament_motion_enum::filament_motion_pressure_ctrl_idle, 100, time_now);
-            MC_STU_RGB_set_latch(num, 0x00u, 0x00u, 0x00u, time_now, 0u);
+            MC_STU_RGB_set_latch(num, UFB_LED_RGB_OFF, time_now, 0u);
         }
     }
 }
@@ -2410,14 +2431,14 @@ static inline void stu_apply_baseline(int error, uint64_t now_ms)
     {
         if (g_on_use_low_latch[i])
         {
-            MC_STU_RGB_set(i, 0xFFu, 0x00u, 0x00u);
+            MC_STU_RGB_set(i, UFB_LED_RGB_RED);
             continue;
         }
 
 #if BMCU_DM_TWO_MICROSWITCH
         if (dm_fail_latch[i])
         {
-            MC_STU_RGB_set(i, 0xFFu, 0x00u, 0x00u);
+            MC_STU_RGB_set(i, UFB_LED_RGB_RED);
             continue;
         }
 
@@ -2427,20 +2448,20 @@ static inline void stu_apply_baseline(int error, uint64_t now_ms)
             (MC_ONLINE_key_stu[i] != 0u) &&
             ins_ok;
 
-        if (show_loaded) MC_STU_RGB_set_latch(i, 0x38u, 0x35u, 0x32u, now_ms, 0u);
-        else             MC_STU_RGB_set_latch(i, 0x00u, 0x00u, 0x00u, now_ms, 0u);
+        if (show_loaded) MC_STU_RGB_set_latch(i, UFB_LED_RGB_OFF, now_ms, 0u);
+        else             MC_STU_RGB_set_latch(i, UFB_LED_RGB_OFF, now_ms, 0u);
 #else
         if (error)
         {
-            if (key_loaded(MC_ONLINE_key_stu[i])) MC_STU_RGB_set_latch(i, 0x38u, 0x35u, 0x32u, now_ms, 0u);
-            else                           MC_STU_RGB_set_latch(i, 0x00u, 0x00u, 0x00u, now_ms, 0u);
+            if (key_loaded(MC_ONLINE_key_stu[i])) MC_STU_RGB_set_latch(i, UFB_LED_RGB_OFF, now_ms, 0u);
+            else                           MC_STU_RGB_set_latch(i, UFB_LED_RGB_OFF, now_ms, 0u);
         }
         else
         {
             if (key_loaded(MC_ONLINE_key_stu[i]) && filament_channel_inserted[i])
-                MC_STU_RGB_set_latch(i, 0x38u, 0x35u, 0x32u, now_ms, 0u);
+                MC_STU_RGB_set_latch(i, UFB_LED_RGB_OFF, now_ms, 0u);
             else
-                MC_STU_RGB_set_latch(i, 0x00u, 0x00u, 0x00u, now_ms, 0u);
+                MC_STU_RGB_set_latch(i, UFB_LED_RGB_OFF, now_ms, 0u);
         }
 #endif
     }
@@ -2451,6 +2472,7 @@ static inline void standalone_reset_channel(uint8_t ch)
     standalone_prev_key[ch]         = 0u;
     standalone_autoload_active[ch]  = 0u;
     standalone_autoload_t0_ms[ch]   = 0ull;
+    standalone_last_zero_ms[ch]     = 0ull;
     standalone_manual_candidate[ch] = 0;
     standalone_manual_active[ch]    = 0;
     standalone_manual_t0_ms[ch]     = 0ull;
@@ -2482,7 +2504,13 @@ static void standalone_update(uint64_t now_ms)
         const uint8_t ks = MC_ONLINE_key_stu[ch];
         const float pct = MC_PULL_pct_f[ch];
         const bool channel_empty = !key_loaded(ks);
-        const bool first_switch_seen = (ks == 2u);
+
+        if (ks == 0u)
+            standalone_last_zero_ms[ch] = now_ms;
+
+        const bool autoload_trigger =
+            (ks == 2u) &&
+            ((now_ms - standalone_last_zero_ms[ch]) <= STANDALONE_AUTOLOAD_ZERO_WINDOW_MS);
 
         if (!channel_empty || standalone_autoload_active[ch])
         {
@@ -2542,8 +2570,7 @@ static void standalone_update(uint64_t now_ms)
         }
 
         if ((standalone_autoload_active[ch] == 0u) &&
-            (standalone_prev_key[ch] == 0u) &&
-            first_switch_seen)
+            autoload_trigger)
         {
             standalone_autoload_active[ch] = 1u;
             standalone_autoload_t0_ms[ch] = now_ms;
@@ -2706,12 +2733,12 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks)
 
             if (standalone_manual)
             {
-                if (manual_dir < 0) MC_STU_RGB_set_latch(i, 0x00u, 0xB0u, 0xFFu, time_now, 0u);
-                else                MC_STU_RGB_set_latch(i, 0xA0u, 0x2Du, 0xFFu, time_now, 1u);
+                if (manual_dir < 0) MC_STU_RGB_set_latch(i, UFB_LED_RGB_CYAN, time_now, 0u);
+                else                MC_STU_RGB_set_latch(i, UFB_LED_RGB_PURPLE, time_now, 1u);
             }
             else
             {
-                MC_STU_RGB_set_latch(i, 0xFFu, 0xFFu, 0x00u, time_now, 0u);
+                MC_STU_RGB_set_latch(i, UFB_LED_RGB_GREEN, time_now, 0u);
             }
         }
         else
@@ -2736,7 +2763,7 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks)
             _MOTOR_CONTROL::x_prev[i] = x;
 
             Motion_control_set_PWM(i, (int)x);
-            MC_STU_RGB_set_latch(i, 0xA0u, 0x2Du, 0xFFu, time_now, 1u);
+            MC_STU_RGB_set_latch(i, UFB_LED_RGB_PURPLE, time_now, 1u);
         }
         else if (manual_empty_pull)
         {
@@ -2756,69 +2783,7 @@ static void motor_motion_run(int error, uint64_t time_now, uint32_t now_ticks)
         }
         }
 
-        uint8_t r = 0u, g = 0u, b = 0u;
-        bool is_filament_rgb = false;
-
-        const uint8_t pct = MC_PULL_pct[i];
-
-        int hi_thr = MC_PULL_DEADBAND_PCT_HIGH;
-
-        const filament_motion_enum m = MOTOR_CONTROL[i].motion;
-
-        bool hi_hold =
-            (m == filament_motion_enum::filament_motion_send) ||
-            (m == filament_motion_enum::filament_motion_before_on_use) ||
-            (m == filament_motion_enum::filament_motion_stop_on_use);
-
-        if (!hi_hold && (m == filament_motion_enum::filament_motion_pressure_ctrl_on_use))
-        {
-            const uint64_t t0 = MOTOR_CONTROL[i].on_use_hi_gate_t0_ms;
-            if (t0 != 0ull && (time_now - t0) < 5000ull) hi_hold = true;
-        }
-
-        if (hi_hold)
-        {
-            hi_thr = (int)MC_LOAD_S2_HOLD_TARGET_PCT + 3;
-            if (hi_thr > 100) hi_thr = 100;
-            if (hi_thr < 0) hi_thr = 0;
-        }
-
-        if (!(m == filament_motion_enum::filament_motion_before_on_use) && (int)pct >= hi_thr)
-        {
-            r = 0x10u;
-        }
-        else if (pct <= 30u)
-        {
-            b = 0x10u;
-        }
-        else
-        {
-            const uint8_t key = MC_ONLINE_key_stu[i];
-
-#if BMCU_ONLINE_LED_FILAMENT_RGB
-    #if BMCU_DM_TWO_MICROSWITCH
-            const bool show_filament_rgb = (key == 1u) && dm_loaded[i] && !dm_fail_latch[i];
-    #else
-            const bool show_filament_rgb = (key != 0u);
-    #endif
-            if (show_filament_rgb)
-            {
-                r = Acol.filament[i].color_R;
-                g = Acol.filament[i].color_G;
-                b = Acol.filament[i].color_B;
-                is_filament_rgb = true;
-            }
-            else
-#endif
-            {
-                if (key == 0u)
-                {
-                    if ((uint8_t)(pct - 49u) <= 2u) { r = 0x10u; g = 0x08u; }
-                }
-            }
-        }
-
-        MC_PULL_ONLINE_RGB_set(i, r, g, b, is_filament_rgb);
+        set_online_led_from_key_state(i, MC_ONLINE_key_stu[i], time_now);
     }
 }
 
