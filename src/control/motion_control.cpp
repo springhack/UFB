@@ -198,6 +198,11 @@ static inline __attribute__((always_inline)) void MC_STU_RGB_set_latch(uint8_t c
 
 static inline void set_online_led_from_key_state(uint8_t ch, uint8_t ks, uint64_t now_ms)
 {
+    // KS meaning used by this firmware:
+    //   0b00 -> KS=0 : no microswitch triggered
+    //   0b10 -> KS=2 : first microswitch only
+    //   0b01 -> KS=1 : loaded / both microswitches reached
+    //   0b11 -> KS=3 : second microswitch only
     switch (ks)
     {
     case 0u:
@@ -219,10 +224,15 @@ static inline uint8_t dm_key_to_state(uint8_t ch, float v)
 {
     const float none_thr = MC_DM_KEY_NONE_THRESH[ch];
 
-    if (v < none_thr) return 0u;   // none
-    if (v > buffer_constants::key_state::loaded_threshold_volts) return 1u;   // both / second switch reached
-    if (v > buffer_constants::key_state::first_switch_threshold_volts) return 2u;   // first switch only
-    return 3u;                     // rare intermediate / undefined
+    // KS is treated as a 2-bit logical state in the rest of the firmware:
+    //   KS=0 -> 0b00 -> no switch
+    //   KS=2 -> 0b10 -> first switch only
+    //   KS=1 -> 0b01 -> loaded
+    //   KS=3 -> 0b11 -> second switch only
+    if (v < none_thr) return 0u;
+    if (v > buffer_constants::key_state::loaded_threshold_volts) return 1u;
+    if (v > buffer_constants::key_state::first_switch_threshold_volts) return 2u;
+    return 3u;
 }
 
 static inline bool key_loaded(uint8_t ks)
