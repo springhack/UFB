@@ -30,6 +30,40 @@ static bool parse_channel_command(const char *line, const char *verb, uint8_t *c
     return true;
 }
 
+static void write_calibration_result(const HallCalibrationResult &r, bool ok)
+{
+    char line[192];
+    const int n = snprintf(line,
+                           sizeof(line),
+                           "CAL ch=%u ok=%u ins=%u first=%u second=%u sc=%u sm=%u cr=%.3f cv=%.3f off=%.3f min=%.3f max=%.3f pol=%d ki=%.3f kt=%.3f\n",
+                           (unsigned)r.channel,
+                           ok ? 1u : 0u,
+                           r.inserted ? 1u : 0u,
+                           r.ok_first ? 1u : 0u,
+                           r.ok_second ? 1u : 0u,
+                           r.ok_cal_save ? 1u : 0u,
+                           r.ok_motion_save ? 1u : 0u,
+                           (double)r.center_raw,
+                           (double)r.center_v,
+                           (double)r.offset,
+                           (double)r.vmin,
+                           (double)r.vmax,
+                           (int)r.polarity,
+                           (double)r.key_idle,
+                           (double)r.key_none_threshold);
+    if (n > 0)
+    {
+        int len = n;
+        if (len >= (int)sizeof(line))
+        {
+            line[sizeof(line) - 2u] = '\n';
+            line[sizeof(line) - 1u] = '\0';
+            len = (int)sizeof(line) - 1;
+        }
+        Debug_log_write_num(line, len);
+    }
+}
+
 WS2812_class SYS_RGB;
 WS2812_class RGBOUT[4];
 
@@ -305,6 +339,14 @@ int main(void)
                 accepted = Motion_control_uart_input(channel_id);
             else if (parse_channel_command(line, "OUTPUT", &channel_id))
                 accepted = Motion_control_uart_output(channel_id);
+            else if (parse_channel_command(line, "RESET", &channel_id))
+            {
+                HallCalibrationResult result{};
+                accepted = MC_PULL_calibration_channel(channel_id, &result);
+                write_calibration_result(result, accepted);
+                Debug_log_write("DONE\n");
+                accepted = true;
+            }
 
             if (!accepted)
                 Debug_log_write("ERR\n");

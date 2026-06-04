@@ -18,8 +18,10 @@ constexpr uint32_t kWifiConnectTimeoutMs = 15000;
 constexpr uint32_t kActionLedBlinkMs = 250;
 constexpr uint32_t kStateRequestIntervalMs = 500;
 constexpr size_t kCompactStateLength = 57;
-constexpr size_t kBmcuLineCapacity = 80;
+constexpr size_t kBmcuLineCapacity = 384;
 constexpr size_t kApiStateCapacity = 80;
+constexpr size_t kBmcuDetailCapacity = 384;
+constexpr uint32_t kResetTimeoutMs = 70000;
 constexpr char kHostname[] = "bmcu";
 constexpr char kWifiNamespace[] = "wifi";
 constexpr char kWifiSsidKey[] = "ssid";
@@ -36,7 +38,12 @@ size_t bmcuLineLength = 0;
 String wifiSsid;
 String wifiPassword;
 char bmcuStateCompact[kCompactStateLength + 1] = "F00000000000000000000000000000000000000000000000000000000";
+char bmcuLastDetail[kBmcuDetailCapacity] = "";
 bool bmcuBusy = false;
+bool bmcuResetActive = false;
+bool bmcuResetDetailReady = false;
+uint8_t bmcuResetChannel = 0;
+uint32_t bmcuResetStartMs = 0;
 bool serverStarted = false;
 bool mdnsStarted = false;
 uint32_t lastStateMs = 0;
@@ -124,6 +131,48 @@ async function act(cmd,ch){
     refresh();
   }catch(e){showToast('Request failed')}
 }
+function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
+function parseDetail(t){
+  const out={raw:t};
+  for(const m of t.matchAll(/(\w+)=([^ ]+)/g)){
+    const v=m[2],n=Number(v);
+    out[m[1]]=Number.isFinite(n)?n:v;
+  }
+  if(out.ins!==undefined&&out.inserted===undefined)out.inserted=out.ins;
+  if(out.sc!==undefined&&out.save_cal===undefined)out.save_cal=out.sc;
+  if(out.sm!==undefined&&out.save_motion===undefined)out.save_motion=out.sm;
+  if(out.cr!==undefined&&out.center_raw===undefined)out.center_raw=out.cr;
+  if(out.cv!==undefined&&out.center_v===undefined)out.center_v=out.cv;
+  if(out.off!==undefined&&out.offset===undefined)out.offset=out.off;
+  if(out.pol!==undefined&&out.polarity===undefined)out.polarity=out.pol;
+  if(out.ki!==undefined&&out.key_idle===undefined)out.key_idle=out.ki;
+  if(out.kt!==undefined&&out.key_thresh===undefined)out.key_thresh=out.kt;
+  return out;
+}
+window.ufb_reset_channel=async function(channel_id){
+  const ch=Number(channel_id);
+  if(!Number.isInteger(ch)||ch<0||ch>3)throw new Error('channel_id must be 0..3');
+  const start=await fetch(`/api/reset?ch=${ch}`,{method:'POST',cache:'no-store'});
+  let text=(await start.text()).trim();
+  if(!text.startsWith('RESET_STARTED')){
+    const data=parseDetail(text);
+    console.log('ufb_reset_channel',data);
+    return data;
+  }
+  const deadline=Date.now()+75000;
+  while(Date.now()<deadline){
+    await sleep(300);
+    const r=await fetch(`/api/reset/result?ch=${ch}`,{cache:'no-store'});
+    text=(await r.text()).trim();
+    if(text==='PENDING')continue;
+    const data=parseDetail(text);
+    console.log('ufb_reset_channel',data);
+    return data;
+  }
+  const data=parseDetail('TIMEOUT');
+  console.log('ufb_reset_channel',data);
+  return data;
+};
 refresh();setInterval(refresh,900);
 </script>
 </body>
@@ -161,7 +210,7 @@ bool parseBmcuActionCommand(const String& line, String& command, uint8_t& channe
   const int spaceIndex = line.indexOf(' ');
   if (spaceIndex <= 0) return false;
   const String verb = normalizeCommand(line.substring(0, spaceIndex));
-  if (verb != "INPUT" && verb != "OUTPUT") return false;
+  if (verb != "INPUT" && verb != "OUTPUT" && verb != "RESET") return false;
   if (!parseChannelId(line.substring(spaceIndex + 1), channelId)) return false;
   command = verb;
   return true;
@@ -223,6 +272,12 @@ void consumeBmcuLine(const char* line) {
     memcpy(bmcuStateCompact, compact, kCompactStateLength);
     bmcuStateCompact[kCompactStateLength] = '\0';
     lastStateMs = millis();
+    return;
+  }
+
+  if (strncmp(line, "CAL ", 4) == 0) {
+    strlcpy(bmcuLastDetail, line, sizeof(bmcuLastDetail));
+    bmcuResetDetailReady = true;
   }
 }
 
@@ -247,11 +302,14 @@ void pollBmcuResponses() {
 }
 
 void startBmcuAction(const String& command, uint8_t channelId) {
+  bmcuLastDetail[0] = '\0';
+  bmcuResetDetailReady = false;
   bmcuSerial.printf("%s %u\n", command.c_str(), channelId);
   bmcuBusy = true;
 }
 
 void requestBmcuState() {
+  if (bmcuBusy) return;
   const uint32_t nowMs = millis();
   if (nowMs - lastStateRequestMs < kStateRequestIntervalMs) return;
   lastStateRequestMs = nowMs;
@@ -294,6 +352,70 @@ void handleApiAction() {
 
   startBmcuAction(cmd, channelId);
   sendPlainText("OK");
+}
+
+void handleApiReset() {
+  if (server.method() != HTTP_POST) {
+    sendPlainText("METHOD_NOT_ALLOWED");
+    return;
+  }
+
+  uint8_t channelId = 0;
+  if (!parseChannelId(server.arg("ch"), channelId)) {
+    sendPlainText("INVALID_CHANNEL");
+    return;
+  }
+
+  if (bmcuBusy) {
+    sendPlainText("BUSY");
+    return;
+  }
+
+  startBmcuAction("RESET", channelId);
+  bmcuResetActive = true;
+  bmcuResetDetailReady = false;
+  bmcuResetChannel = channelId;
+  bmcuResetStartMs = millis();
+  char body[32] = {};
+  snprintf(body, sizeof(body), "RESET_STARTED ch=%u", (unsigned)channelId);
+  sendPlainText(body);
+}
+
+void handleApiResetResult() {
+  pollBmcuResponses();
+
+  uint8_t channelId = 0;
+  if (!parseChannelId(server.arg("ch"), channelId)) {
+    sendPlainText("INVALID_CHANNEL");
+    return;
+  }
+
+  if (!bmcuResetActive || channelId != bmcuResetChannel) {
+    sendPlainText(bmcuLastDetail[0] ? bmcuLastDetail : "NO_RESET_ACTIVE");
+    return;
+  }
+
+  if (bmcuResetDetailReady) {
+    bmcuBusy = false;
+    bmcuResetActive = false;
+    sendPlainText(bmcuLastDetail);
+    return;
+  }
+
+  if (bmcuBusy && millis() - bmcuResetStartMs < kResetTimeoutMs) {
+    sendPlainText("PENDING");
+    return;
+  }
+
+  if (bmcuBusy) {
+    bmcuBusy = false;
+    bmcuResetActive = false;
+    sendPlainText("TIMEOUT");
+    return;
+  }
+
+  bmcuResetActive = false;
+  sendPlainText(bmcuLastDetail[0] ? bmcuLastDetail : "NO_DETAIL");
 }
 
 void handleActionRequest(const char* command, const char* prefix) {
@@ -343,6 +465,8 @@ void ensureServerStarted() {
   server.on("/", HTTP_GET, handleIndex);
   server.on("/api/state", HTTP_GET, handleApiState);
   server.on("/api/action", HTTP_POST, handleApiAction);
+  server.on("/api/reset", HTTP_POST, handleApiReset);
+  server.on("/api/reset/result", HTTP_GET, handleApiResetResult);
   server.on("/state", HTTP_GET, handleApiState);
   server.onNotFound(handleDynamicRequest);
   server.begin();
@@ -428,7 +552,7 @@ void handleUsbCommand(const String& rawLine) {
     return;
   }
 
-  if (keyword == "INPUT" || keyword == "OUTPUT") {
+  if (keyword == "INPUT" || keyword == "OUTPUT" || keyword == "RESET") {
     Serial.println("INVALID_BMCU_COMMAND");
     return;
   }

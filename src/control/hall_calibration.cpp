@@ -5,6 +5,7 @@
 #include "platform/hal/time_hw.h"
 #include "platform/debug_log.h"
 #include "platform/runtime_api.h"
+#include <math.h>
 
 extern void RGB_update();
 
@@ -65,6 +66,11 @@ static inline float cal_apply_polarity(float v, int8_t pol)
     return (pol < 0) ? (3.30f - v) : v;
 }
 
+static const float    CAL_PRESS_DELTA_V = 0.1f;
+static const float    CAL_CENTER_EPS_V  = 0.02f;
+static const uint32_t CAL_STABLE_MS     = 200;
+static const uint32_t CAL_TIMEOUT_MS    = 30000;
+
 static void blink_all(uint8_t r, uint8_t g, uint8_t b, int times = 4, int on_ms = 60, int off_ms = 60)
 {
     for (int k = 0; k < times; k++)
@@ -76,9 +82,268 @@ static void blink_all(uint8_t r, uint8_t g, uint8_t b, int times = 4, int on_ms 
     }
 }
 
+static void blink_one(int ch, uint8_t r, uint8_t g, uint8_t b, int times = 3, int on_ms = 70, int off_ms = 70)
+{
+    for (int k = 0; k < times; k++)
+    {
+        MC_PULL_ONLINE_RGB_set(ch, r, g, b);
+        RGB_update(); delay(on_ms);
+        MC_PULL_ONLINE_RGB_set(ch, 0, 0, 0);
+        RGB_update(); delay(off_ms);
+    }
+}
+
+static bool capture_first_extreme_wait_release(int ch, float center_v, float &out_best_norm, int8_t &out_pol)
+{
+    const uint32_t tpm = time_hw_ticks_per_ms();
+    const uint32_t t0  = time_ticks32();
+    const uint32_t dt  = (uint32_t)CAL_TIMEOUT_MS * tpm;
+
+    bool pressed = false;
+    float raw_min = center_v;
+    float raw_max = center_v;
+    uint32_t stable_t0 = 0u;
+
+    out_best_norm = center_v;
+    out_pol = 1;
+
+    for (;;)
+    {
+        const uint32_t now_t = time_ticks32();
+        if ((uint32_t)(now_t - t0) >= dt) break;
+
+        const float v = adc_pull_v_centered(ch);
+
+        const uint32_t elapsed_ms = (uint32_t)((now_t - t0) / tpm);
+        if (((elapsed_ms / 200u) & 1u) == 0u) MC_PULL_ONLINE_RGB_set(ch, 0x00, 0x00, 0x10);
+        else                                  MC_PULL_ONLINE_RGB_set(ch, 0x00, 0x00, 0x00);
+        RGB_update();
+
+        if (!pressed)
+        {
+            if (fabsf(v - center_v) >= CAL_PRESS_DELTA_V)
+            {
+                pressed = true;
+                raw_min = v;
+                raw_max = v;
+            }
+        }
+        else
+        {
+            if (v < raw_min) raw_min = v;
+            if (v > raw_max) raw_max = v;
+
+            if (fabsf(v - center_v) <= CAL_CENTER_EPS_V)
+            {
+                if (stable_t0 == 0u) stable_t0 = now_t;
+                if ((uint32_t)(now_t - stable_t0) >= (uint32_t)CAL_STABLE_MS * tpm)
+                {
+                    const float dmin = center_v - raw_min;
+                    const float dmax = raw_max - center_v;
+
+                    if (dmax > dmin)
+                    {
+                        out_pol = -1;
+                        out_best_norm = cal_apply_polarity(raw_max, out_pol);
+                    }
+                    else
+                    {
+                        out_pol = 1;
+                        out_best_norm = cal_apply_polarity(raw_min, out_pol);
+                    }
+
+                    MC_PULL_ONLINE_RGB_set(ch, 0, 0, 0);
+                    RGB_update();
+                    return true;
+                }
+            }
+            else
+            {
+                stable_t0 = 0u;
+            }
+        }
+
+        delay(15);
+    }
+
+    out_best_norm = center_v;
+    out_pol = 1;
+    MC_PULL_ONLINE_RGB_set(ch, 0, 0, 0);
+    RGB_update();
+    return false;
+}
+
+static bool capture_second_extreme_wait_release(int ch, float center_v, int8_t pol, float &out_best_norm)
+{
+    const uint32_t tpm = time_hw_ticks_per_ms();
+    const uint32_t t0  = time_ticks32();
+    const uint32_t dt  = (uint32_t)CAL_TIMEOUT_MS * tpm;
+
+    const bool want_raw_min = (pol < 0);
+
+    bool pressed = false;
+    float best_raw = center_v;
+    uint32_t stable_t0 = 0u;
+
+    for (;;)
+    {
+        const uint32_t now_t = time_ticks32();
+        if ((uint32_t)(now_t - t0) >= dt) break;
+
+        const float v = adc_pull_v_centered(ch);
+
+        const uint32_t elapsed_ms = (uint32_t)((now_t - t0) / tpm);
+        if (((elapsed_ms / 200u) & 1u) == 0u) MC_PULL_ONLINE_RGB_set(ch, 0x10, 0x00, 0x00);
+        else                                  MC_PULL_ONLINE_RGB_set(ch, 0x00, 0x00, 0x00);
+        RGB_update();
+
+        if (!pressed)
+        {
+            if (want_raw_min)
+            {
+                if (v < (center_v - CAL_PRESS_DELTA_V))
+                {
+                    pressed = true;
+                    best_raw = v;
+                }
+            }
+            else
+            {
+                if (v > (center_v + CAL_PRESS_DELTA_V))
+                {
+                    pressed = true;
+                    best_raw = v;
+                }
+            }
+        }
+        else
+        {
+            if (want_raw_min)
+            {
+                if (v < best_raw) best_raw = v;
+            }
+            else
+            {
+                if (v > best_raw) best_raw = v;
+            }
+
+            if (fabsf(v - center_v) <= CAL_CENTER_EPS_V)
+            {
+                if (stable_t0 == 0u) stable_t0 = now_t;
+                if ((uint32_t)(now_t - stable_t0) >= (uint32_t)CAL_STABLE_MS * tpm)
+                {
+                    out_best_norm = cal_apply_polarity(best_raw, pol);
+                    MC_PULL_ONLINE_RGB_set(ch, 0, 0, 0);
+                    RGB_update();
+                    return true;
+                }
+            }
+            else
+            {
+                stable_t0 = 0u;
+            }
+        }
+
+        delay(15);
+    }
+
+    out_best_norm = center_v;
+    MC_PULL_ONLINE_RGB_set(ch, 0, 0, 0);
+    RGB_update();
+    return false;
+}
+
+static void capture_minmax_one_ch_event(int ch, float center_v, float &out_min, float &out_max, int8_t &out_pol,
+                                        bool &out_ok_first, bool &out_ok_second)
+{
+    float vmin = center_v;
+    float vmax = center_v;
+    int8_t pol = 1;
+
+    out_ok_first = capture_first_extreme_wait_release(ch, center_v, vmin, pol);
+    if (out_ok_first) blink_one(ch, 0x10, 0x10, 0x00, 2, 60, 60);
+
+    out_ok_second = capture_second_extreme_wait_release(ch, center_v, pol, vmax);
+    if (out_ok_second) blink_one(ch, 0x10, 0x10, 0x00, 2, 60, 60);
+
+    if (vmin > (center_v - 0.050f)) vmin = (center_v - 0.050f);
+    if (vmax < (center_v + 0.050f)) vmax = (center_v + 0.050f);
+    if (vmax <= vmin + 0.10f) { vmin = center_v - 0.10f; vmax = center_v + 0.10f; }
+
+    out_min = vmin;
+    out_max = vmax;
+    out_pol = pol;
+}
+
 void MC_PULL_calibration_clear()
 {
     Flash_NVM_full_clear();
+}
+
+bool MC_PULL_calibration_channel(uint8_t channel_id, HallCalibrationResult *result)
+{
+    if (channel_id >= 4u) return false;
+
+    HallCalibrationResult r{};
+    r.channel = channel_id;
+    r.polarity = 1;
+    r.vmin = MC_PULL_V_MIN[channel_id];
+    r.vmax = MC_PULL_V_MAX[channel_id];
+    r.offset = MC_PULL_V_OFFSET[channel_id];
+    r.key_none_threshold = MC_DM_KEY_NONE_THRESH[channel_id];
+
+    for (uint8_t ch = 0; ch < 4u; ch++) Motion_control_set_PWM(ch, 0);
+    for (int i = 0; i < 6; i++) { ADC_DMA_poll(); delay(20); }
+
+    MC_PULL_detect_channels_inserted();
+    r.inserted = filament_channel_inserted[channel_id];
+    if (!r.inserted)
+    {
+        if (result) *result = r;
+        blink_one(channel_id, 0x10, 0x00, 0x00, 2, 140, 100);
+        return false;
+    }
+
+    constexpr int N = 90;
+    double sum_raw = 0.0;
+    double sum_key = 0.0;
+
+    for (int k = 0; k < N; k++)
+    {
+        const float *v = ADC_DMA_get_value();
+        sum_raw += adc_pull_raw_ch(channel_id, v);
+        sum_key += adc_key_raw_ch(channel_id, v);
+        MC_PULL_ONLINE_RGB_set(channel_id, 0x10, 0x10, 0x00);
+        RGB_update();
+        delay(15);
+    }
+
+    r.center_raw = (float)(sum_raw / (double)N);
+    r.key_idle = (float)(sum_key / (double)N);
+    r.offset = 1.65f - r.center_raw;
+    r.center_v = r.center_raw + r.offset;
+    r.key_none_threshold = dm_key_none_threshold_from_idle(r.key_idle);
+
+    MC_PULL_V_OFFSET[channel_id] = r.offset;
+    MC_DM_KEY_NONE_THRESH[channel_id] = r.key_none_threshold;
+
+    capture_minmax_one_ch_event(channel_id, r.center_v, r.vmin, r.vmax, r.polarity,
+                                r.ok_first, r.ok_second);
+
+    MC_PULL_V_MIN[channel_id] = r.vmin;
+    MC_PULL_V_MAX[channel_id] = r.vmax;
+    MC_PULL_POLARITY[channel_id] = (r.polarity < 0) ? -1 : 1;
+
+    r.ok_cal_save = Flash_MC_PULL_cal_write_all(MC_PULL_V_OFFSET, MC_PULL_V_MIN, MC_PULL_V_MAX, MC_PULL_POLARITY);
+    r.ok_motion_save = Motion_control_save_dm_key_none_thresholds();
+
+    if (result) *result = r;
+
+    const bool ok = r.ok_first && r.ok_second && r.ok_cal_save && r.ok_motion_save;
+    if (ok) blink_one(channel_id, 0x00, 0x10, 0x00, 2, 120, 80);
+    else    blink_one(channel_id, 0x10, 0x00, 0x00, 2, 160, 120);
+
+    return ok;
 }
 
 void MC_PULL_calibration_boot()
@@ -159,9 +424,8 @@ void MC_PULL_calibration_boot()
         center_v_ref[ch] = center_raw[ch] + MC_PULL_V_OFFSET[ch];
     }
 
-    // Offline standalone mode:
-    // avoid blocking interactive Hall calibration at boot.
-    // We keep passive center calibration and store generic travel defaults.
+    // Offline standalone mode: avoid blocking interactive Hall calibration at boot.
+    // Manual RESET <channel> performs the full Hall travel/polarity calibration.
     (void)center_v_ref;
     for (int ch = 0; ch < 4; ch++)
     {
