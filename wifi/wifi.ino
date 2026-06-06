@@ -89,7 +89,14 @@ const grid=document.getElementById('grid'),statusEl=document.getElementById('sta
 let busy=false,loaded=-1;
 const names=['Channel 1','Channel 2','Channel 3','Channel 4'];
 const emptyCompact='F00000000000000000000000000000000000000000000000000000000';
+const cardViews=[];
 function showToast(t){toast.textContent=t;toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),1400)}
+function el(tag,cls,text){
+  const node=document.createElement(tag);
+  if(cls)node.className=cls;
+  if(text!==undefined)node.textContent=text;
+  return node;
+}
 function hx(s,o,n){return parseInt(s.slice(o,o+n),16)||0}
 function parseState(t){
   const p=t.trim().split(/\s+/),c=(p[2]&&p[2].length>=57)?p[2]:emptyCompact;
@@ -106,13 +113,58 @@ function bufferMode(value){
   if(text==='PULL')return {text:'PULL',cls:'pull'};
   return {text:'IDLE',cls:'idle'};
 }
-function card(i,c){
-  const inserted=!!c.inserted, active=loaded===i;
-  const mode=bufferMode(c.buffer);
-  return `<section class="card"><div class="top"><div><div class="name">${names[i]}</div><div class="state">${inserted?'Connected':'Not connected'}${active?' · Loaded':''}</div></div><div class="mode ${mode.cls}">${mode.text}</div></div>
-  <div class="lights"><div class="light"><div class="label">Online LED</div><div class="sw" style="background:${c.online||'#000'}"></div></div><div class="light"><div class="label">Status LED</div><div class="sw" style="background:${c.status||'#000'}"></div></div></div>
-  <div class="switches"><div class="switch ${c.sw1?'on':''}"><span class="toggle"><span class="knob"></span></span></div><div class="switch ${c.sw2?'on':''}"><span class="toggle"><span class="knob"></span></span></div></div>
-  <div class="actions"><button ${busy?'disabled':''} onclick="act('input',${i})">Load</button><button class="out" ${busy?'disabled':''} onclick="act('output',${i})">Unload</button></div></section>`;
+function makeLed(label){
+  const light=el('div','light'),name=el('div','label',label),sw=el('div','sw');
+  light.append(name,sw);
+  return {root:light,sw};
+}
+function makeSwitch(){
+  const root=el('div','switch'),toggle=el('span','toggle'),knob=el('span','knob');
+  toggle.append(knob);
+  root.append(toggle);
+  return root;
+}
+function createCard(i){
+  const root=el('section','card');
+  const top=el('div','top'),titleWrap=el('div'),name=el('div','name',names[i]),state=el('div','state'),mode=el('div','mode idle','IDLE');
+  titleWrap.append(name,state);
+  top.append(titleWrap,mode);
+
+  const lights=el('div','lights'),online=makeLed('Online LED'),status=makeLed('Status LED');
+  lights.append(online.root,status.root);
+
+  const switches=el('div','switches'),sw1=makeSwitch(),sw2=makeSwitch();
+  switches.append(sw1,sw2);
+
+  const actions=el('div','actions'),load=el('button','', 'Load'),unload=el('button','out','Unload');
+  load.addEventListener('click',()=>act('input',i));
+  unload.addEventListener('click',()=>act('output',i));
+  actions.append(load,unload);
+
+  root.append(top,lights,switches,actions);
+  return {root,state,mode,online:online.sw,status:status.sw,sw1,sw2,load,unload};
+}
+function ensureCards(count){
+  while(cardViews.length<count){
+    const view=createCard(cardViews.length);
+    cardViews.push(view);
+    grid.append(view.root);
+  }
+  for(let i=0;i<cardViews.length;i++)cardViews[i].root.hidden=i>=count;
+}
+function updateCard(i,c){
+  const view=cardViews[i];
+  if(!view)return;
+  const inserted=!!c.inserted,active=loaded===i,mode=bufferMode(c.buffer);
+  view.state.textContent=(inserted?'Connected':'Not connected')+(active?' - Loaded':'');
+  view.mode.textContent=mode.text;
+  view.mode.className='mode '+mode.cls;
+  view.online.style.background=c.online||'#000';
+  view.status.style.background=c.status||'#000';
+  view.sw1.classList.toggle('on',!!c.sw1);
+  view.sw2.classList.toggle('on',!!c.sw2);
+  view.load.disabled=busy;
+  view.unload.disabled=busy;
 }
 async function refresh(){
   try{
@@ -120,7 +172,9 @@ async function refresh(){
     const s=parseState(await r.text());
     busy=!!s.busy;loaded=s.loaded??-1;
     statusEl.textContent=s.stale?'WAIT':(busy?'BUSY':'IDLE');
-    grid.innerHTML=(s.channels||[]).map((c,i)=>card(i,c)).join('');
+    const channels=s.channels||[];
+    ensureCards(channels.length);
+    channels.forEach((c,i)=>updateCard(i,c));
   }catch(e){statusEl.textContent='OFFL'}
 }
 async function act(cmd,ch){
